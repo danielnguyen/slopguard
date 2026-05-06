@@ -1,4 +1,4 @@
-import browser from 'webextension-polyfill';
+const runtime = (globalThis as any).browser?.runtime || (globalThis as any).chrome?.runtime;
 
 const VIDEO_CARD_SELECTOR = [
   'ytd-rich-item-renderer',
@@ -84,7 +84,7 @@ function injectBadge(card: HTMLElement, result: ClassificationResult): void {
 }
 
 function classifyCard(card: Element, title: string, videoId: string): void {
-  browser.runtime
+  runtime
     .sendMessage({
       type: 'CLASSIFY_VIDEO',
       videoId,
@@ -99,7 +99,7 @@ function classifyCard(card: Element, title: string, videoId: string): void {
         injectBadge(card as HTMLElement, result);
       }
     })
-    .catch((error) => {
+    .catch((error: any) => {
       console.warn('SlopGuard classify failed', { title, videoId, error });
     });
 }
