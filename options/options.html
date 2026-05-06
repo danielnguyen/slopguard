@@ -1,9 +1,82 @@
 <!DOCTYPE html>
 <html>
+  <head>
+    <meta charset="utf-8" />
+    <title>SlopGuard Settings</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        max-width: 720px;
+        margin: 32px auto;
+        padding: 0 16px;
+        line-height: 1.4;
+      }
+
+      label {
+        display: block;
+        font-weight: 600;
+        margin-top: 16px;
+      }
+
+      input,
+      select {
+        margin-top: 6px;
+        padding: 8px;
+        width: 100%;
+        max-width: 420px;
+      }
+
+      input[type="checkbox"] {
+        width: auto;
+      }
+
+      .hint {
+        color: #666;
+        font-size: 0.9rem;
+        margin-top: 4px;
+      }
+
+      .status {
+        margin-top: 16px;
+        min-height: 1.4em;
+      }
+    </style>
+  </head>
   <body>
-    <h3>SlopGuard Settings</h3>
-    <label>OpenAI API Key:</label>
-    <input id="apiKey" type="text" style="width:300px" />
+    <h1>SlopGuard Settings</h1>
+
+    <label>
+      <input id="enabled" type="checkbox" />
+      Enable SlopGuard
+    </label>
+
+    <label for="provider">Classifier</label>
+    <select id="provider">
+      <option value="heuristic">Heuristic only</option>
+      <option value="openai">OpenAI gated by heuristic</option>
+    </select>
+    <div class="hint">OpenAI is only called when the lightweight heuristic score crosses the gate threshold.</div>
+
+    <label for="apiKey">OpenAI API Key</label>
+    <input id="apiKey" type="password" autocomplete="off" placeholder="sk-..." />
+    <div class="hint">Stored locally in browser extension storage. Leave blank for heuristic-only mode.</div>
+
+    <label for="openaiModel">OpenAI Model</label>
+    <input id="openaiModel" type="text" placeholder="gpt-4.1-mini" />
+
+    <label for="warnThreshold">Warn threshold</label>
+    <input id="warnThreshold" type="number" min="0" max="100" step="1" />
+
+    <label for="highThreshold">High-risk threshold</label>
+    <input id="highThreshold" type="number" min="0" max="100" step="1" />
+
+    <label for="openaiGateThreshold">OpenAI gate threshold</label>
+    <input id="openaiGateThreshold" type="number" min="0" max="100" step="1" />
+
+    <button id="save" type="button">Save Settings</button>
+
+    <div id="status" class="status"></div>
+
     <script src="options.js"></script>
   </body>
 </html>
