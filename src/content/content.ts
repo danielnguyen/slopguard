@@ -59,7 +59,7 @@ function injectBadge(card: HTMLElement, result: ClassificationResult): void {
 
   const badge = document.createElement('div');
   badge.className = 'slopguard-badge';
-  badge.textContent = result.score >= 50 ? '🔴 Slop risk' : '🟡 Check content';
+  badge.textContent = result.label === 'high' ? '🔴 Slop risk' : '🟡 Check content';
   badge.title = `SlopGuard score: ${result.score} (${result.label})`;
 
   Object.assign(badge.style, {
@@ -91,11 +91,17 @@ function classifyCard(card: Element, title: string, videoId: string): void {
       title
     })
     .then((result: ClassificationResult | undefined) => {
-      console.log('SlopGuard result', { title, videoId, result });
+      console.log('SlopGuard result', {
+        title,
+        videoId,
+        score: result?.score,
+        label: result?.label,
+        result
+      });
 
       if (!result) return;
 
-      if (result.score >= 30) {
+      if (result.label !== 'low') {
         injectBadge(card as HTMLElement, result);
       }
     })
