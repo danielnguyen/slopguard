@@ -1,4 +1,4 @@
-import { heuristicScore } from '../scoring/heuristics';
+import browser from 'webextension-polyfill';
 
 const VIDEO_CARD_SELECTOR = [
   'ytd-rich-item-renderer',
@@ -8,6 +8,11 @@ const VIDEO_CARD_SELECTOR = [
   'ytd-grid-video-renderer',
   'yt-lockup-view-model'
 ].join(',');
+
+type ClassificationResult = {
+  score: number;
+  label: 'low' | 'medium' | 'high';
+};
 
 let scanTimer: number | undefined;
 
@@ -22,6 +27,21 @@ function getTitle(card: Element): string | null {
   return text || attrTitle || null;
 }
 
+function getVideoId(card: Element): string | null {
+  const link =
+    card.querySelector('a#thumbnail[href*="/watch"]') ||
+    card.querySelector('a[href*="/watch?v="]');
+
+  const href = (link as HTMLAnchorElement | null)?.href;
+  if (!href) return null;
+
+  try {
+    return new URL(href).searchParams.get('v');
+  } catch {
+    return null;
+  }
+}
+
 function getBadgeTarget(card: Element): HTMLElement | null {
   return (
     card.querySelector('a#thumbnail') ||
@@ -31,14 +51,16 @@ function getBadgeTarget(card: Element): HTMLElement | null {
   ) as HTMLElement | null;
 }
 
-function injectBadge(card: HTMLElement, score: number): void {
+function injectBadge(card: HTMLElement, result: ClassificationResult): void {
+  if (card.querySelector('.slopguard-badge')) return;
+
   const target = getBadgeTarget(card);
   if (!target) return;
 
   const badge = document.createElement('div');
   badge.className = 'slopguard-badge';
-  badge.textContent = score > 30 ? '🔴 Slop risk' : '🟡 Check content';
-  badge.title = `SlopGuard heuristic score: ${score}`;
+  badge.textContent = result.score >= 50 ? '🔴 Slop risk' : '🟡 Check content';
+  badge.title = `SlopGuard score: ${result.score} (${result.label})`;
 
   Object.assign(badge.style, {
     position: 'absolute',
@@ -61,6 +83,27 @@ function injectBadge(card: HTMLElement, score: number): void {
   target.appendChild(badge);
 }
 
+function classifyCard(card: Element, title: string, videoId: string): void {
+  browser.runtime
+    .sendMessage({
+      type: 'CLASSIFY_VIDEO',
+      videoId,
+      title
+    })
+    .then((result: ClassificationResult | undefined) => {
+      console.log('SlopGuard result', { title, videoId, result });
+
+      if (!result) return;
+
+      if (result.score >= 30) {
+        injectBadge(card as HTMLElement, result);
+      }
+    })
+    .catch((error) => {
+      console.warn('SlopGuard classify failed', { title, videoId, error });
+    });
+}
+
 function scan(): void {
   const cards = document.querySelectorAll(VIDEO_CARD_SELECTOR);
   console.log('SlopGuard scanning', cards.length, location.href);
@@ -73,19 +116,23 @@ function scan(): void {
     const title = getTitle(card);
     if (!title) return;
 
+    const videoId = getVideoId(card);
+    if (!videoId) return;
+
     htmlCard.dataset.slopguardProcessed = 'true';
-
-    const score = heuristicScore(title, '');
-
-    if (score > 25) {
-      injectBadge(htmlCard, score);
-    }
+    classifyCard(card, title, videoId);
   });
 }
 
 function scheduleScan(): void {
   window.clearTimeout(scanTimer);
   scanTimer = window.setTimeout(scan, 300);
+}
+
+function resetProcessedCards(): void {
+  document.querySelectorAll('[data-slopguard-processed]').forEach((el) => {
+    delete (el as HTMLElement).dataset.slopguardProcessed;
+  });
 }
 
 function bootstrap(): void {
@@ -98,10 +145,7 @@ function bootstrap(): void {
   });
 
   window.addEventListener('yt-navigate-finish', () => {
-    document.querySelectorAll('[data-slopguard-processed]').forEach((el) => {
-      delete (el as HTMLElement).dataset.slopguardProcessed;
-    });
-
+    resetProcessedCards();
     scheduleScan();
   });
 
