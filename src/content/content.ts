@@ -35,6 +35,12 @@ function textFrom(selector: string, root: Element): string | undefined {
   return el?.innerText?.trim() || undefined;
 }
 
+function cleanText(value?: string): string | undefined {
+  if (!value) return undefined;
+  const cleaned = value.replace(/\s+/g, ' ').trim();
+  return cleaned || undefined;
+}
+
 function isNearViewport(element: Element): boolean {
   const rect = element.getBoundingClientRect();
   const buffer = window.innerHeight * VIEWPORT_BUFFER_MULTIPLIER;
@@ -54,26 +60,37 @@ function getTitle(card: Element): string | null {
 }
 
 function getChannel(card: Element): string | undefined {
-  return (
+  return cleanText(
     textFrom('#channel-name yt-formatted-string', card) ||
-    textFrom('ytd-channel-name yt-formatted-string', card) ||
-    textFrom('a.yt-simple-endpoint[href^="/@"]', card) ||
-    textFrom('a[href^="/@"]', card)
+      textFrom('ytd-channel-name yt-formatted-string', card) ||
+      textFrom('a.yt-simple-endpoint[href^="/@"]', card) ||
+      textFrom('a[href^="/@"]', card)
   );
 }
 
 function getSnippet(card: Element): string | undefined {
-  return (
+  const snippet = cleanText(
     textFrom('#description-text', card) ||
-    textFrom('yt-formatted-string.metadata-snippet-text', card) ||
-    textFrom('yt-formatted-string.inline-metadata-item', card) ||
-    textFrom('#metadata-line', card)
+      textFrom('yt-formatted-string.metadata-snippet-text', card)
   );
+
+  if (!snippet) return undefined;
+  if (snippet.length > 280) return `${snippet.slice(0, 277)}...`;
+  return snippet;
 }
 
 function isSponsoredCard(card: Element): boolean {
-  const text = (card.textContent || '').toLowerCase();
-  return /\bsponsored\b|\bad\b/.test(text);
+  const visibleText = cleanText(card.textContent || '') || '';
+  const hasSponsoredText = /(^|\s)Sponsored(\s|$|·|\.)/.test(visibleText);
+  const hasAdCta = Boolean(
+    card.querySelector('ytd-button-renderer, button, a[href*="googleadservices"], a[href*="doubleclick"]')
+  );
+  const hasAdRenderer = Boolean(
+    card.closest('ytd-ad-slot-renderer') ||
+      card.querySelector('ytd-promoted-video-renderer, ytd-display-ad-renderer, ytd-in-feed-ad-layout-renderer')
+  );
+
+  return hasAdRenderer || (hasSponsoredText && hasAdCta);
 }
 
 function getVideoId(card: Element): string | null {
@@ -148,7 +165,7 @@ function injectSponsoredBadge(card: HTMLElement): void {
   const badge = createBadge(
     'slopguard-sponsored-badge',
     '🔵 Sponsored',
-    'SlopGuard: this card appears to be sponsored/advertising content.',
+    'SlopGuard: this card appears to be a YouTube sponsored placement.',
     '6px',
     'rgba(20, 70, 150, 0.9)'
   );
