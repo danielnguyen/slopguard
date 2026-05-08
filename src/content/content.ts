@@ -232,10 +232,11 @@ function sourceRank(source?: ClassificationResult['source']): number {
   switch (source) {
     case 'openai':
     case 'cache':
+      return 4;
+    case 'queued':
       return 3;
     case 'heuristic':
       return 2;
-    case 'queued':
     case 'local_throttled':
     case 'local_error_fallback':
       return 1;
