@@ -1,6 +1,7 @@
 const extensionApi = (globalThis as any).browser || (globalThis as any).chrome;
 const runtime = extensionApi.runtime;
 const storage = extensionApi.storage;
+const tabs = extensionApi.tabs;
 
 console.log('ContextChecker background loaded');
 
@@ -8,9 +9,11 @@ const DEFAULT_WARN_THRESHOLD = 20;
 const DEFAULT_HIGH_THRESHOLD = 40;
 const DEFAULT_OPENAI_GATE_THRESHOLD = 20;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const CACHE_VERSION = 10;
+const CACHE_VERSION = 11;
 const OPENAI_CALL_WINDOW_MS = 60 * 1000;
-const MAX_OPENAI_CALLS_PER_WINDOW = 10;
+const MAX_OPENAI_CALLS_PER_WINDOW = 20;
+const OPENAI_INITIAL_BURST = 5;
+const OPENAI_QUEUE_INTERVAL_MS = 3500;
 
 type Provider = 'heuristic' | 'openai';
 type ResultSource = 'heuristic' | 'openai' | 'cache' | 'local_throttled' | 'local_error_fallback';
@@ -68,6 +71,8 @@ type Stats = {
   heuristicResults: number;
   openaiCalls: number;
   openaiFailures: number;
+  openaiQueued: number;
+  openaiUpgrades: number;
   openaiThrottled: number;
 };
 
@@ -85,7 +90,20 @@ type EligibilityResult = {
   attentionFramingScore: number;
 };
 
+type QueueSubscriber = {
+  tabId: number;
+};
+
+type QueuedReview = {
+  metadata: VideoMetadata;
+  cacheKey: string;
+  priority: number;
+  enqueuedAt: number;
+  subscribers: QueueSubscriber[];
+};
+
 const memoryCache = new Map<string, CacheEntry>();
+const pendingOpenAIReviews = new Map<string, QueuedReview>();
 const openaiCallTimestamps: number[] = [];
 const stats: Stats = {
   classified: 0,
@@ -93,6 +111,8 @@ const stats: Stats = {
   heuristicResults: 0,
   openaiCalls: 0,
   openaiFailures: 0,
+  openaiQueued: 0,
+  openaiUpgrades: 0,
   openaiThrottled: 0
 };
 
@@ -220,14 +240,22 @@ function getCacheKey(videoId: string, settings: SlopGuardSettings): string {
   return `contextCheckerCache:v${CACHE_VERSION}:${providerPart}:warn${settings.warnThreshold}:high${settings.highThreshold}:${videoId}`;
 }
 
-function canCallOpenAI(): boolean {
-  const now = Date.now();
-
+function pruneOpenAIWindow(now = Date.now()): void {
   while (openaiCallTimestamps.length > 0 && now - openaiCallTimestamps[0] > OPENAI_CALL_WINDOW_MS) {
     openaiCallTimestamps.shift();
   }
+}
+
+function canCallOpenAI(): boolean {
+  const now = Date.now();
+  pruneOpenAIWindow(now);
 
   if (openaiCallTimestamps.length >= MAX_OPENAI_CALLS_PER_WINDOW) {
+    return false;
+  }
+
+  const recentBurstCalls = openaiCallTimestamps.filter((timestamp) => now - timestamp < OPENAI_QUEUE_INTERVAL_MS).length;
+  if (openaiCallTimestamps.length >= OPENAI_INITIAL_BURST && recentBurstCalls > 0) {
     return false;
   }
 
@@ -348,8 +376,13 @@ async function setCachedResult(cacheKey: string, metadata: VideoMetadata, result
   return entry;
 }
 
+function shouldPersistResult(result: ClassificationResult): boolean {
+  return result.source !== 'local_throttled' && result.source !== 'local_error_fallback';
+}
+
 async function clearCache(): Promise<{ removed: number }> {
   memoryCache.clear();
+  pendingOpenAIReviews.clear();
   const all = await storageGet(null);
   const keys = Object.keys(all).filter((key) => key.startsWith('slopguardCache:') || key.startsWith('contextCheckerCache:'));
   if (keys.length > 0) await storageRemove(keys);
@@ -397,18 +430,9 @@ function parseOpenAIJson(text: string): Partial<ClassificationResult> {
   return JSON.parse(trimmed.slice(jsonStart, jsonEnd + 1));
 }
 
-async function openAIClassification(metadata: VideoMetadata, settings: SlopGuardSettings, category: ContentCategory): Promise<ClassificationResult> {
+async function performOpenAIClassification(metadata: VideoMetadata, settings: SlopGuardSettings, category: ContentCategory): Promise<ClassificationResult> {
   if (!settings.openaiApiKey) {
     return heuristicClassification(metadata, settings);
-  }
-
-  if (!canCallOpenAI()) {
-    stats.openaiThrottled += 1;
-    return markLocalFallback(
-      heuristicClassification(metadata, settings),
-      'local_throttled',
-      'AI review was throttled; used local eligibility check only.'
-    );
   }
 
   stats.openaiCalls += 1;
@@ -469,7 +493,112 @@ async function openAIClassification(metadata: VideoMetadata, settings: SlopGuard
   };
 }
 
-async function classifyVideo(metadata: VideoMetadata): Promise<ClassificationResult> {
+async function openAIClassification(metadata: VideoMetadata, settings: SlopGuardSettings, category: ContentCategory): Promise<ClassificationResult> {
+  if (!settings.openaiApiKey) {
+    return heuristicClassification(metadata, settings);
+  }
+
+  if (!canCallOpenAI()) {
+    stats.openaiThrottled += 1;
+    return markLocalFallback(
+      heuristicClassification(metadata, settings),
+      'local_throttled',
+      'AI review was queued; local eligibility check shown for now.'
+    );
+  }
+
+  return performOpenAIClassification(metadata, settings, category);
+}
+
+function sendClassificationUpdate(review: QueuedReview, result: ClassificationResult): void {
+  if (!tabs?.sendMessage) return;
+
+  const seenTabs = new Set<number>();
+  for (const subscriber of review.subscribers) {
+    if (seenTabs.has(subscriber.tabId)) continue;
+    seenTabs.add(subscriber.tabId);
+
+    try {
+      const maybePromise = tabs.sendMessage(subscriber.tabId, {
+        type: 'CLASSIFICATION_UPDATED',
+        videoId: review.metadata.videoId,
+        result
+      });
+
+      if (maybePromise?.catch) {
+        maybePromise.catch(() => undefined);
+      }
+    } catch {
+      // The tab may have navigated away or closed. Safe to ignore.
+    }
+  }
+}
+
+function enqueueOpenAIReview(metadata: VideoMetadata, cacheKey: string, priority: number, sender: any): void {
+  const tabId = sender?.tab?.id;
+  if (typeof tabId !== 'number') return;
+
+  const existing = pendingOpenAIReviews.get(metadata.videoId);
+  const subscriber = { tabId };
+
+  if (existing) {
+    if (!existing.subscribers.some((item) => item.tabId === tabId)) {
+      existing.subscribers.push(subscriber);
+    }
+    existing.priority = Math.max(existing.priority, priority);
+    return;
+  }
+
+  pendingOpenAIReviews.set(metadata.videoId, {
+    metadata,
+    cacheKey,
+    priority,
+    enqueuedAt: Date.now(),
+    subscribers: [subscriber]
+  });
+  stats.openaiQueued += 1;
+}
+
+function getNextQueuedReview(): QueuedReview | null {
+  const queued = Array.from(pendingOpenAIReviews.values());
+  if (queued.length === 0) return null;
+
+  queued.sort((a, b) => {
+    if (b.priority !== a.priority) return b.priority - a.priority;
+    return a.enqueuedAt - b.enqueuedAt;
+  });
+
+  return queued[0];
+}
+
+async function processOpenAIQueue(): Promise<void> {
+  const review = getNextQueuedReview();
+  if (!review) return;
+  if (!canCallOpenAI()) return;
+
+  const settings = await getSettings();
+  if (!settings.enabled || settings.provider !== 'openai' || !settings.openaiApiKey) return;
+
+  pendingOpenAIReviews.delete(review.metadata.videoId);
+
+  try {
+    const result = await performOpenAIClassification(review.metadata, settings, 'political_current_affairs');
+    const cached = await setCachedResult(review.cacheKey, review.metadata, result);
+    stats.openaiUpgrades += 1;
+    sendClassificationUpdate(review, cached);
+  } catch (error) {
+    stats.openaiFailures += 1;
+    console.warn('ContextChecker queued OpenAI classification failed.', error);
+    const fallback = markLocalFallback(
+      heuristicClassification(review.metadata, settings),
+      'local_error_fallback',
+      'Queued AI review failed; local eligibility check shown.'
+    );
+    sendClassificationUpdate(review, fallback);
+  }
+}
+
+async function classifyVideo(metadata: VideoMetadata, sender?: any): Promise<ClassificationResult> {
   const settings = await getSettings();
   stats.classified += 1;
 
@@ -507,6 +636,9 @@ async function classifyVideo(metadata: VideoMetadata): Promise<ClassificationRes
   ) {
     try {
       result = await openAIClassification(metadata, settings, heuristic.category);
+      if (result.source === 'local_throttled') {
+        enqueueOpenAIReview(metadata, cacheKey, heuristic.score, sender);
+      }
     } catch (error) {
       stats.openaiFailures += 1;
       console.warn('ContextChecker OpenAI classification failed; falling back to local eligibility.', error);
@@ -519,12 +651,24 @@ async function classifyVideo(metadata: VideoMetadata): Promise<ClassificationRes
   }
 
   debugLog(settings, 'ContextChecker classified', { metadata, result });
+
+  if (!shouldPersistResult(result)) {
+    return result;
+  }
+
   return setCachedResult(cacheKey, metadata, result);
 }
 
-runtime.onMessage.addListener((msg: SlopGuardMessage) => {
+setInterval(() => {
+  processOpenAIQueue().catch((error) => {
+    stats.openaiFailures += 1;
+    console.warn('ContextChecker queue processing failed.', error);
+  });
+}, OPENAI_QUEUE_INTERVAL_MS);
+
+runtime.onMessage.addListener((msg: SlopGuardMessage, sender: any) => {
   if (msg.type === 'GET_STATS') {
-    return Promise.resolve({ ...stats, memoryCacheSize: memoryCache.size });
+    return Promise.resolve({ ...stats, memoryCacheSize: memoryCache.size, pendingOpenAIReviews: pendingOpenAIReviews.size });
   }
 
   if (msg.type === 'CLEAR_CACHE') {
@@ -544,5 +688,5 @@ runtime.onMessage.addListener((msg: SlopGuardMessage) => {
     snippet: msg.snippet,
     pageUrl: msg.pageUrl,
     isSponsored: msg.isSponsored
-  });
+  }, sender);
 });
