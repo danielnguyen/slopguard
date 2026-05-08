@@ -6,7 +6,10 @@ const VIDEO_CARD_SELECTOR = [
   'ytd-video-renderer',
   'ytd-compact-video-renderer',
   'ytd-grid-video-renderer',
-  'yt-lockup-view-model'
+  'yt-lockup-view-model',
+  'ytd-ad-slot-renderer',
+  'ytd-promoted-video-renderer',
+  'ytd-in-feed-ad-layout-renderer'
 ].join(',');
 
 const VIEWPORT_BUFFER_MULTIPLIER = 1.5;
@@ -17,6 +20,7 @@ type ClassificationResult = {
   source?: 'heuristic' | 'openai' | 'cache';
   explanation?: string;
   labels?: string[];
+  category?: string;
 };
 
 type VideoMetadata = {
@@ -50,13 +54,13 @@ function isNearViewport(element: Element): boolean {
 
 function getTitle(card: Element): string | null {
   const titleEl = card.querySelector(
-    '#video-title, a#video-title-link, yt-formatted-string#video-title, h3 a, a[title]'
+    '#video-title, a#video-title-link, yt-formatted-string#video-title, h3 a, a[title], #headline, .headline'
   );
 
   const text = (titleEl as HTMLElement | null)?.innerText?.trim();
   const attrTitle = (titleEl as HTMLAnchorElement | null)?.title?.trim();
 
-  return text || attrTitle || null;
+  return cleanText(text || attrTitle) || null;
 }
 
 function getChannel(card: Element): string | undefined {
@@ -98,6 +102,7 @@ function isSponsoredCard(card: Element): boolean {
   const hasSponsoredLabel = hasVisibleExactText(card, 'Sponsored');
   const hasAdRenderer = Boolean(
     card.closest('ytd-ad-slot-renderer') ||
+      card.matches('ytd-ad-slot-renderer, ytd-promoted-video-renderer, ytd-in-feed-ad-layout-renderer') ||
       card.querySelector('ytd-promoted-video-renderer, ytd-display-ad-renderer, ytd-in-feed-ad-layout-renderer')
   );
 
@@ -131,9 +136,10 @@ function getBadgeTarget(card: Element): HTMLElement | null {
 function getBadgeTitle(result: ClassificationResult): string {
   const lines = [`SlopGuard score: ${result.score} (${result.label})`];
 
+  if (result.category) lines.push(`Category: ${result.category}`);
   if (result.source) lines.push(`Source: ${result.source}`);
   if (result.explanation) lines.push(`Reason: ${result.explanation}`);
-  if (result.labels?.length) lines.push(`Labels: ${result.labels.join(', ')}`);
+  if (result.labels?.length) lines.push(`Signals: ${result.labels.join(', ')}`);
 
   return lines.join('\n');
 }
@@ -175,14 +181,19 @@ function injectSponsoredBadge(card: HTMLElement): void {
 
   const badge = createBadge(
     'slopguard-sponsored-badge',
-    '🔵 Sponsored',
-    'SlopGuard: this card appears to be a YouTube sponsored placement.',
+    '🔵 Sponsored placement',
+    'SlopGuard: this appears to be a YouTube sponsored placement.',
     '6px',
     'rgba(20, 70, 150, 0.9)'
   );
 
   ensureBadgeTargetPosition(target);
   target.appendChild(badge);
+}
+
+function getPublicBadgeText(result: ClassificationResult): string {
+  if (result.label === 'high') return '🔴 Check sourcing';
+  return '🟡 Context needed';
 }
 
 function injectBadge(card: HTMLElement, result: ClassificationResult): void {
@@ -194,7 +205,7 @@ function injectBadge(card: HTMLElement, result: ClassificationResult): void {
   const top = card.querySelector('.slopguard-sponsored-badge') ? '32px' : '6px';
   const badge = createBadge(
     'slopguard-badge',
-    result.label === 'high' ? '🔴 Slop risk' : '🟡 Check content',
+    getPublicBadgeText(result),
     getBadgeTitle(result),
     top,
     'rgba(0, 0, 0, 0.86)'
@@ -215,6 +226,7 @@ function classifyCard(card: Element, metadata: VideoMetadata): void {
         ...metadata,
         score: result?.score,
         label: result?.label,
+        category: result?.category,
         source: result?.source,
         labels: result?.labels,
         explanation: result?.explanation,
@@ -242,16 +254,19 @@ function scan(): void {
     if (htmlCard.dataset.slopguardProcessed === 'true') return;
     if (!isNearViewport(card)) return;
 
-    const title = getTitle(card);
-    if (!title) return;
-
     const sponsored = isSponsoredCard(card);
     if (sponsored) {
       injectSponsoredBadge(htmlCard);
     }
 
+    const title = getTitle(card);
     const videoId = getVideoId(card);
-    if (!videoId) return;
+
+    // Some YouTube ad placements do not expose a normal video title/id. Still badge them as sponsored.
+    if (!title || !videoId) {
+      htmlCard.dataset.slopguardProcessed = sponsored ? 'true' : htmlCard.dataset.slopguardProcessed;
+      return;
+    }
 
     const metadata: VideoMetadata = {
       videoId,
