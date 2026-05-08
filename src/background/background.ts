@@ -9,6 +9,8 @@ const DEFAULT_HIGH_THRESHOLD = 40;
 const DEFAULT_OPENAI_GATE_THRESHOLD = 20;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CACHE_VERSION = 4;
+const OPENAI_CALL_WINDOW_MS = 60 * 1000;
+const MAX_OPENAI_CALLS_PER_WINDOW = 10;
 
 type Provider = 'heuristic' | 'openai';
 
@@ -62,15 +64,18 @@ type Stats = {
   heuristicResults: number;
   openaiCalls: number;
   openaiFailures: number;
+  openaiThrottled: number;
 };
 
 const memoryCache = new Map<string, CacheEntry>();
+const openaiCallTimestamps: number[] = [];
 const stats: Stats = {
   classified: 0,
   cacheHits: 0,
   heuristicResults: 0,
   openaiCalls: 0,
-  openaiFailures: 0
+  openaiFailures: 0,
+  openaiThrottled: 0
 };
 
 function getDefaultSettings(): SlopGuardSettings {
@@ -122,6 +127,21 @@ function getCacheKey(videoId: string, settings: SlopGuardSettings): string {
     : 'heuristic';
 
   return `slopguardCache:v${CACHE_VERSION}:${providerPart}:warn${settings.warnThreshold}:high${settings.highThreshold}:${videoId}`;
+}
+
+function canCallOpenAI(): boolean {
+  const now = Date.now();
+
+  while (openaiCallTimestamps.length > 0 && now - openaiCallTimestamps[0] > OPENAI_CALL_WINDOW_MS) {
+    openaiCallTimestamps.shift();
+  }
+
+  if (openaiCallTimestamps.length >= MAX_OPENAI_CALLS_PER_WINDOW) {
+    return false;
+  }
+
+  openaiCallTimestamps.push(now);
+  return true;
 }
 
 function heuristicScore(title: string): number {
@@ -214,6 +234,15 @@ function parseOpenAIJson(text: string): Partial<ClassificationResult> {
 async function openAIClassification(metadata: VideoMetadata, settings: SlopGuardSettings): Promise<ClassificationResult> {
   if (!settings.openaiApiKey) {
     return heuristicClassification(metadata, settings);
+  }
+
+  if (!canCallOpenAI()) {
+    stats.openaiThrottled += 1;
+    const fallback = heuristicClassification(metadata, settings);
+    return {
+      ...fallback,
+      explanation: 'OpenAI throttle reached; used heuristic fallback.'
+    };
   }
 
   stats.openaiCalls += 1;
