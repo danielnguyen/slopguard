@@ -52,6 +52,16 @@ function isNearViewport(element: Element): boolean {
   return rect.bottom >= -buffer && rect.top <= window.innerHeight + buffer;
 }
 
+function isUploaderPage(): boolean {
+  const path = location.pathname;
+  return (
+    path.startsWith('/@') ||
+    path.startsWith('/channel/') ||
+    path.startsWith('/c/') ||
+    path.startsWith('/user/')
+  );
+}
+
 function getTitle(card: Element): string | null {
   const titleEl = card.querySelector(
     '#video-title, a#video-title-link, yt-formatted-string#video-title, h3 a, a[title], #headline, .headline'
@@ -124,17 +134,37 @@ function getVideoId(card: Element): string | null {
   }
 }
 
-function getBadgeTarget(card: Element): HTMLElement | null {
+function hasVisibleSurface(target: HTMLElement): boolean {
+  const rect = target.getBoundingClientRect();
+  const style = getComputedStyle(target);
+
   return (
-    card.querySelector('a#thumbnail') ||
-    card.querySelector('ytd-thumbnail') ||
-    card.querySelector('#thumbnail') ||
+    rect.width >= 120 &&
+    rect.height >= 60 &&
+    style.visibility !== 'hidden' &&
+    style.display !== 'none'
+  );
+}
+
+function getBadgeTarget(card: Element): HTMLElement | null {
+  const candidates = [
+    card.querySelector('a#thumbnail'),
+    card.querySelector('ytd-thumbnail'),
+    card.querySelector('#thumbnail'),
+    card.querySelector('img'),
     card
-  ) as HTMLElement | null;
+  ];
+
+  for (const candidate of candidates) {
+    const target = candidate as HTMLElement | null;
+    if (target && hasVisibleSurface(target)) return target;
+  }
+
+  return null;
 }
 
 function getBadgeTitle(result: ClassificationResult): string {
-  const lines = [`SlopGuard score: ${result.score} (${result.label})`];
+  const lines = [`ContextChecker score: ${result.score} (${result.label})`];
 
   if (result.category) lines.push(`Category: ${result.category}`);
   if (result.source) lines.push(`Source: ${result.source}`);
@@ -182,7 +212,7 @@ function injectSponsoredBadge(card: HTMLElement): void {
   const badge = createBadge(
     'slopguard-sponsored-badge',
     '🔵 Sponsored placement',
-    'SlopGuard: this appears to be a YouTube sponsored placement.',
+    'ContextChecker: this appears to be a YouTube sponsored placement.',
     '6px',
     'rgba(20, 70, 150, 0.9)'
   );
@@ -222,7 +252,7 @@ function classifyCard(card: Element, metadata: VideoMetadata): void {
       ...metadata
     })
     .then((result: ClassificationResult | undefined) => {
-      console.log('SlopGuard result', {
+      console.log('ContextChecker result', {
         ...metadata,
         score: result?.score,
         label: result?.label,
@@ -240,13 +270,14 @@ function classifyCard(card: Element, metadata: VideoMetadata): void {
       }
     })
     .catch((error: any) => {
-      console.warn('SlopGuard classify failed', { metadata, error });
+      console.warn('ContextChecker classify failed', { metadata, error });
     });
 }
 
 function scan(): void {
   const cards = document.querySelectorAll(VIDEO_CARD_SELECTOR);
-  console.log('SlopGuard scanning', cards.length, location.href);
+  const uploaderPage = isUploaderPage();
+  console.log('ContextChecker scanning', cards.length, location.href, { uploaderPage });
 
   cards.forEach((card) => {
     const htmlCard = card as HTMLElement;
@@ -257,6 +288,11 @@ function scan(): void {
     const sponsored = isSponsoredCard(card);
     if (sponsored) {
       injectSponsoredBadge(htmlCard);
+    }
+
+    if (uploaderPage) {
+      htmlCard.dataset.slopguardProcessed = 'true';
+      return;
     }
 
     const title = getTitle(card);
