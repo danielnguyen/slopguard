@@ -237,8 +237,35 @@ function getPublicBadgeText(result: ClassificationResult): string {
   return '🟡 Context needed';
 }
 
-function injectBadge(card: HTMLElement, result: ClassificationResult): void {
-  if (card.querySelector('.slopguard-badge')) return;
+function updateBadgeElement(badge: HTMLDivElement, result: ClassificationResult): void {
+  badge.textContent = getPublicBadgeText(result);
+  badge.title = getBadgeTitle(result);
+  badge.dataset.contextCheckerSource = result.source || '';
+  badge.dataset.contextCheckerLabel = result.label;
+
+  if (result.source === 'openai' && result.label === 'high') {
+    badge.style.background = 'rgba(120, 0, 0, 0.9)';
+  } else {
+    badge.style.background = 'rgba(0, 0, 0, 0.86)';
+  }
+}
+
+function removeBadge(card: HTMLElement): void {
+  card.querySelectorAll('.slopguard-badge').forEach((badge) => badge.remove());
+}
+
+function injectOrUpdateBadge(card: HTMLElement, result: ClassificationResult): void {
+  const existing = card.querySelector('.slopguard-badge') as HTMLDivElement | null;
+
+  if (result.label === 'low') {
+    removeBadge(card);
+    return;
+  }
+
+  if (existing) {
+    updateBadgeElement(existing, result);
+    return;
+  }
 
   const target = getBadgeTarget(card);
   if (!target) return;
@@ -250,6 +277,7 @@ function injectBadge(card: HTMLElement, result: ClassificationResult): void {
     '6px',
     'rgba(0, 0, 0, 0.86)'
   );
+  updateBadgeElement(badge, result);
 
   ensureBadgeTargetPosition(target);
   target.appendChild(badge);
@@ -275,9 +303,7 @@ function classifyCard(card: Element, metadata: VideoMetadata): void {
 
       if (!result) return;
 
-      if (result.label !== 'low') {
-        injectBadge(card as HTMLElement, result);
-      }
+      injectOrUpdateBadge(card as HTMLElement, result);
     })
     .catch((error: any) => {
       console.warn('ContextChecker classify failed', { metadata, error });
@@ -313,6 +339,8 @@ function scan(): void {
       return;
     }
 
+    htmlCard.dataset.contextCheckerVideoId = videoId;
+
     const metadata: VideoMetadata = {
       videoId,
       title,
@@ -338,6 +366,15 @@ function resetProcessedCards(): void {
   });
 }
 
+function handleClassificationUpdated(message: { videoId?: string; result?: ClassificationResult }): void {
+  if (!message.videoId || !message.result) return;
+
+  document.querySelectorAll(`[data-context-checker-video-id="${CSS.escape(message.videoId)}"]`).forEach((card) => {
+    console.log('ContextChecker upgraded result', { videoId: message.videoId, result: message.result });
+    injectOrUpdateBadge(card as HTMLElement, message.result!);
+  });
+}
+
 function bootstrap(): void {
   scheduleScan();
 
@@ -352,6 +389,12 @@ function bootstrap(): void {
   window.addEventListener('yt-navigate-finish', () => {
     resetProcessedCards();
     scheduleScan();
+  });
+
+  runtime.onMessage.addListener((message: any) => {
+    if (message?.type === 'CLASSIFICATION_UPDATED') {
+      handleClassificationUpdated(message);
+    }
   });
 
   window.setTimeout(scan, 1000);
