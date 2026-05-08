@@ -1,7 +1,7 @@
 {
-  "name": "slopguard",
+  "name": "context-checker",
   "version": "0.1.0",
-  "description": "A cross-browser YouTube content-quality warning extension for spotting low-transparency, engagement-driven content patterns.",
+  "description": "A cross-browser YouTube context-signal extension for spotting low-transparency, engagement-driven content patterns.",
   "type": "module",
   "private": true,
   "scripts": {
