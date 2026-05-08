@@ -8,11 +8,12 @@ const DEFAULT_WARN_THRESHOLD = 20;
 const DEFAULT_HIGH_THRESHOLD = 40;
 const DEFAULT_OPENAI_GATE_THRESHOLD = 20;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const CACHE_VERSION = 9;
+const CACHE_VERSION = 10;
 const OPENAI_CALL_WINDOW_MS = 60 * 1000;
 const MAX_OPENAI_CALLS_PER_WINDOW = 10;
 
 type Provider = 'heuristic' | 'openai';
+type ResultSource = 'heuristic' | 'openai' | 'cache' | 'local_throttled' | 'local_error_fallback';
 type ContentCategory = 'political_current_affairs' | 'creator_drama' | 'entertainment' | 'ad_placement' | 'unknown';
 
 type SlopGuardSettings = {
@@ -38,7 +39,7 @@ type VideoMetadata = {
 type ClassificationResult = {
   score: number;
   label: 'low' | 'medium' | 'high';
-  source: 'heuristic' | 'openai' | 'cache';
+  source: ResultSource;
   category: ContentCategory;
   explanation?: string;
   labels?: string[];
@@ -372,6 +373,18 @@ function heuristicClassification(metadata: VideoMetadata, settings: SlopGuardSet
   };
 }
 
+function markLocalFallback(result: ClassificationResult, source: 'local_throttled' | 'local_error_fallback', explanation: string): ClassificationResult {
+  const labels = new Set(result.labels || []);
+  labels.add(source);
+
+  return {
+    ...result,
+    source,
+    explanation,
+    labels: Array.from(labels)
+  };
+}
+
 function parseOpenAIJson(text: string): Partial<ClassificationResult> {
   const trimmed = text.trim();
   const jsonStart = trimmed.indexOf('{');
@@ -391,11 +404,11 @@ async function openAIClassification(metadata: VideoMetadata, settings: SlopGuard
 
   if (!canCallOpenAI()) {
     stats.openaiThrottled += 1;
-    const fallback = heuristicClassification(metadata, settings);
-    return {
-      ...fallback,
-      explanation: 'OpenAI throttle reached; used local eligibility fallback.'
-    };
+    return markLocalFallback(
+      heuristicClassification(metadata, settings),
+      'local_throttled',
+      'AI review was throttled; used local eligibility check only.'
+    );
   }
 
   stats.openaiCalls += 1;
@@ -497,10 +510,11 @@ async function classifyVideo(metadata: VideoMetadata): Promise<ClassificationRes
     } catch (error) {
       stats.openaiFailures += 1;
       console.warn('ContextChecker OpenAI classification failed; falling back to local eligibility.', error);
-      result = {
-        ...heuristic,
-        explanation: 'OpenAI failed; used local eligibility fallback.'
-      };
+      result = markLocalFallback(
+        heuristic,
+        'local_error_fallback',
+        'AI review failed; used local eligibility check only.'
+      );
     }
   }
 
