@@ -9,14 +9,14 @@ const DEFAULT_WARN_THRESHOLD = 20;
 const DEFAULT_HIGH_THRESHOLD = 40;
 const DEFAULT_OPENAI_GATE_THRESHOLD = 20;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const CACHE_VERSION = 11;
+const CACHE_VERSION = 12;
 const OPENAI_CALL_WINDOW_MS = 60 * 1000;
 const MAX_OPENAI_CALLS_PER_WINDOW = 20;
 const OPENAI_INITIAL_BURST = 5;
 const OPENAI_QUEUE_INTERVAL_MS = 3500;
 
 type Provider = 'heuristic' | 'openai';
-type ResultSource = 'heuristic' | 'openai' | 'cache' | 'local_throttled' | 'local_error_fallback';
+type ResultSource = 'heuristic' | 'openai' | 'cache' | 'queued' | 'local_throttled' | 'local_error_fallback';
 type ContentCategory = 'political_current_affairs' | 'creator_drama' | 'entertainment' | 'ad_placement' | 'unknown';
 
 type SlopGuardSettings = {
@@ -377,7 +377,7 @@ async function setCachedResult(cacheKey: string, metadata: VideoMetadata, result
 }
 
 function shouldPersistResult(result: ClassificationResult): boolean {
-  return result.source !== 'local_throttled' && result.source !== 'local_error_fallback';
+  return result.source !== 'queued' && result.source !== 'local_throttled' && result.source !== 'local_error_fallback';
 }
 
 async function clearCache(): Promise<{ removed: number }> {
@@ -406,7 +406,7 @@ function heuristicClassification(metadata: VideoMetadata, settings: SlopGuardSet
   };
 }
 
-function markLocalFallback(result: ClassificationResult, source: 'local_throttled' | 'local_error_fallback', explanation: string): ClassificationResult {
+function markLocalFallback(result: ClassificationResult, source: 'queued' | 'local_throttled' | 'local_error_fallback', explanation: string): ClassificationResult {
   const labels = new Set(result.labels || []);
   labels.add(source);
 
@@ -502,8 +502,8 @@ async function openAIClassification(metadata: VideoMetadata, settings: SlopGuard
     stats.openaiThrottled += 1;
     return markLocalFallback(
       heuristicClassification(metadata, settings),
-      'local_throttled',
-      'AI review was queued; local eligibility check shown for now.'
+      'queued',
+      'AI review is queued; checking source transparency.'
     );
   }
 
@@ -636,7 +636,7 @@ async function classifyVideo(metadata: VideoMetadata, sender?: any): Promise<Cla
   ) {
     try {
       result = await openAIClassification(metadata, settings, heuristic.category);
-      if (result.source === 'local_throttled') {
+      if (result.source === 'queued') {
         enqueueOpenAIReview(metadata, cacheKey, heuristic.score, sender);
       }
     } catch (error) {
