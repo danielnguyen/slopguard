@@ -17,7 +17,7 @@ const VIEWPORT_BUFFER_MULTIPLIER = 1.5;
 type ClassificationResult = {
   score: number;
   label: 'low' | 'medium' | 'high';
-  source?: 'heuristic' | 'openai' | 'cache' | 'local_throttled' | 'local_error_fallback';
+  source?: 'heuristic' | 'openai' | 'cache' | 'queued' | 'local_throttled' | 'local_error_fallback';
   explanation?: string;
   labels?: string[];
   category?: string;
@@ -235,6 +235,7 @@ function sourceRank(source?: ClassificationResult['source']): number {
       return 3;
     case 'heuristic':
       return 2;
+    case 'queued':
     case 'local_throttled':
     case 'local_error_fallback':
       return 1;
@@ -244,6 +245,8 @@ function sourceRank(source?: ClassificationResult['source']): number {
 }
 
 function getPublicBadgeText(result: ClassificationResult): string {
+  if (result.source === 'queued') return '⚪ Checking…';
+
   if (result.source === 'heuristic' || result.source === 'local_throttled' || result.source === 'local_error_fallback') {
     return '🟡 Quick check';
   }
@@ -258,7 +261,9 @@ function updateBadgeElement(badge: HTMLDivElement, result: ClassificationResult)
   badge.dataset.contextCheckerSource = result.source || '';
   badge.dataset.contextCheckerLabel = result.label;
 
-  if ((result.source === 'openai' || result.source === 'cache') && result.label === 'high') {
+  if (result.source === 'queued') {
+    badge.style.background = 'rgba(90, 90, 90, 0.9)';
+  } else if ((result.source === 'openai' || result.source === 'cache') && result.label === 'high') {
     badge.style.background = 'rgba(120, 0, 0, 0.9)';
   } else {
     badge.style.background = 'rgba(0, 0, 0, 0.86)';
