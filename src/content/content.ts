@@ -17,7 +17,7 @@ const VIEWPORT_BUFFER_MULTIPLIER = 1.5;
 type ClassificationResult = {
   score: number;
   label: 'low' | 'medium' | 'high';
-  source?: 'heuristic' | 'openai' | 'cache';
+  source?: 'heuristic' | 'openai' | 'cache' | 'local_throttled' | 'local_error_fallback';
   explanation?: string;
   labels?: string[];
   category?: string;
@@ -222,6 +222,7 @@ function injectSponsoredBadge(card: HTMLElement): void {
 }
 
 function getPublicBadgeText(result: ClassificationResult): string {
+  if (result.source === 'local_throttled' || result.source === 'local_error_fallback') return '🟡 Quick check';
   if (result.label === 'high') return '🔴 Check sourcing';
   return '🟡 Context needed';
 }
