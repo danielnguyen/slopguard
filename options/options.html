@@ -30,6 +30,18 @@
         width: auto;
       }
 
+      button {
+        margin-top: 16px;
+        margin-right: 8px;
+        padding: 8px 12px;
+      }
+
+      pre {
+        background: #f5f5f5;
+        padding: 12px;
+        overflow: auto;
+      }
+
       .hint {
         color: #666;
         font-size: 0.9rem;
@@ -48,6 +60,11 @@
     <label>
       <input id="enabled" type="checkbox" />
       Enable SlopGuard
+    </label>
+
+    <label>
+      <input id="debugLogging" type="checkbox" />
+      Debug logging
     </label>
 
     <label for="provider">Classifier</label>
@@ -74,6 +91,11 @@
     <input id="openaiGateThreshold" type="number" min="0" max="100" step="1" />
 
     <button id="save" type="button">Save Settings</button>
+    <button id="refreshStats" type="button">Refresh Stats</button>
+    <button id="clearCache" type="button">Clear Cache</button>
+
+    <h2>Session stats</h2>
+    <pre id="stats">No stats loaded.</pre>
 
     <div id="status" class="status"></div>
 
