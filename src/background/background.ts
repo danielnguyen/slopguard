@@ -8,7 +8,7 @@ const DEFAULT_WARN_THRESHOLD = 20;
 const DEFAULT_HIGH_THRESHOLD = 40;
 const DEFAULT_OPENAI_GATE_THRESHOLD = 20;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const CACHE_VERSION = 3;
+const CACHE_VERSION = 4;
 
 type Provider = 'heuristic' | 'openai';
 
@@ -21,6 +21,14 @@ type SlopGuardSettings = {
   openaiApiKey?: string;
   openaiModel: string;
   debugLogging: boolean;
+};
+
+type VideoMetadata = {
+  videoId: string;
+  title: string;
+  channel?: string;
+  snippet?: string;
+  pageUrl?: string;
 };
 
 type ClassificationResult = {
@@ -39,10 +47,8 @@ type CacheEntry = ClassificationResult & {
   cacheVersion: number;
 };
 
-type ClassifyVideoMessage = {
+type ClassifyVideoMessage = VideoMetadata & {
   type: 'CLASSIFY_VIDEO';
-  videoId?: string;
-  title?: string;
 };
 
 type SlopGuardMessage =
@@ -159,11 +165,11 @@ async function getCachedResult(cacheKey: string): Promise<CacheEntry | null> {
   return entry;
 }
 
-async function setCachedResult(cacheKey: string, videoId: string, title: string, result: ClassificationResult): Promise<CacheEntry> {
+async function setCachedResult(cacheKey: string, metadata: VideoMetadata, result: ClassificationResult): Promise<CacheEntry> {
   const entry: CacheEntry = {
     ...result,
-    videoId,
-    title,
+    videoId: metadata.videoId,
+    title: metadata.title,
     cacheKey,
     cacheVersion: CACHE_VERSION
   };
@@ -181,8 +187,8 @@ async function clearCache(): Promise<{ removed: number }> {
   return { removed: keys.length };
 }
 
-function heuristicClassification(title: string, settings: SlopGuardSettings): ClassificationResult {
-  const score = heuristicScore(title);
+function heuristicClassification(metadata: VideoMetadata, settings: SlopGuardSettings): ClassificationResult {
+  const score = heuristicScore(metadata.title);
   return {
     score,
     label: labelForScore(score, settings),
@@ -205,9 +211,9 @@ function parseOpenAIJson(text: string): Partial<ClassificationResult> {
   return JSON.parse(trimmed.slice(jsonStart, jsonEnd + 1));
 }
 
-async function openAIClassification(title: string, settings: SlopGuardSettings): Promise<ClassificationResult> {
+async function openAIClassification(metadata: VideoMetadata, settings: SlopGuardSettings): Promise<ClassificationResult> {
   if (!settings.openaiApiKey) {
-    return heuristicClassification(title, settings);
+    return heuristicClassification(metadata, settings);
   }
 
   stats.openaiCalls += 1;
@@ -224,13 +230,13 @@ async function openAIClassification(title: string, settings: SlopGuardSettings):
         {
           role: 'system',
           content:
-            'You classify YouTube video metadata for low-transparency, engagement-driven slop patterns. Return JSON only. Do not judge political alignment. Important distinction: clickbait packaging is not automatically slop. Original creator content, interviews, documentaries, podcasts, and real guest-based shows can have sensational titles but should receive lower scores unless the metadata implies fabricated claims, weak sourcing, faceless narrative farming, synthetic news style, or speculative political/geopolitical manipulation. Penalize high-confidence claims with low visible accountability. Reward clear original reporting, named institutions, interviews, or transparent creator context.'
+            'You classify YouTube video metadata for low-transparency, engagement-driven slop patterns. Return JSON only. Do not judge political alignment. Important distinction: clickbait packaging is not automatically slop. Original creator content, interviews, documentaries, podcasts, and reporting from named news outlets can have sensational titles but should receive lower scores unless the metadata implies fabricated claims, weak sourcing, faceless narrative farming, synthetic news style, or speculative political/geopolitical manipulation. Penalize high-confidence claims with low visible accountability. Reward clear channel identity, named institutions, visible report snippets, interviews, or transparent creator context.'
         },
         {
           role: 'user',
           content: JSON.stringify({
-            title,
-            task: 'Return JSON with slop_score 0-100, labels string array, and explanation <= 20 words. Include labels like clickbait_only, original_creator_context, sensationalism, speculative_narrative, weak_sourcing, synthetic_news_style, faceless_content_farm when applicable.'
+            metadata,
+            task: 'Return JSON with slop_score 0-100, labels string array, and explanation <= 20 words. Include labels like clickbait_only, original_creator_context, named_news_outlet, sensationalism, speculative_narrative, weak_sourcing, synthetic_news_style, faceless_content_farm when applicable.'
           })
         }
       ],
@@ -261,7 +267,7 @@ async function openAIClassification(title: string, settings: SlopGuardSettings):
   };
 }
 
-async function classifyVideo(videoId: string, title: string): Promise<ClassificationResult> {
+async function classifyVideo(metadata: VideoMetadata): Promise<ClassificationResult> {
   const settings = await getSettings();
   stats.classified += 1;
 
@@ -276,7 +282,7 @@ async function classifyVideo(videoId: string, title: string): Promise<Classifica
     };
   }
 
-  const cacheKey = getCacheKey(videoId, settings);
+  const cacheKey = getCacheKey(metadata.videoId, settings);
   const cached = await getCachedResult(cacheKey);
   if (cached) {
     stats.cacheHits += 1;
@@ -286,13 +292,13 @@ async function classifyVideo(videoId: string, title: string): Promise<Classifica
     };
   }
 
-  const heuristic = heuristicClassification(title, settings);
+  const heuristic = heuristicClassification(metadata, settings);
   stats.heuristicResults += 1;
 
   let result = heuristic;
   if (settings.provider === 'openai' && heuristic.score >= settings.openaiGateThreshold && settings.openaiApiKey) {
     try {
-      result = await openAIClassification(title, settings);
+      result = await openAIClassification(metadata, settings);
     } catch (error) {
       stats.openaiFailures += 1;
       console.warn('SlopGuard OpenAI classification failed; falling back to heuristic.', error);
@@ -303,8 +309,8 @@ async function classifyVideo(videoId: string, title: string): Promise<Classifica
     }
   }
 
-  debugLog(settings, 'SlopGuard classified', { title, videoId, result });
-  return setCachedResult(cacheKey, videoId, title, result);
+  debugLog(settings, 'SlopGuard classified', { metadata, result });
+  return setCachedResult(cacheKey, metadata, result);
 }
 
 runtime.onMessage.addListener((msg: SlopGuardMessage) => {
@@ -322,5 +328,11 @@ runtime.onMessage.addListener((msg: SlopGuardMessage) => {
     return undefined;
   }
 
-  return classifyVideo(msg.videoId, msg.title);
+  return classifyVideo({
+    videoId: msg.videoId,
+    title: msg.title,
+    channel: msg.channel,
+    snippet: msg.snippet,
+    pageUrl: msg.pageUrl
+  });
 });
