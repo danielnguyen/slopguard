@@ -25,6 +25,7 @@ type VideoMetadata = {
   channel?: string;
   snippet?: string;
   pageUrl: string;
+  isSponsored?: boolean;
 };
 
 let scanTimer: number | undefined;
@@ -70,6 +71,11 @@ function getSnippet(card: Element): string | undefined {
   );
 }
 
+function isSponsoredCard(card: Element): boolean {
+  const text = (card.textContent || '').toLowerCase();
+  return /\bsponsored\b|\bad\b/.test(text);
+}
+
 function getVideoId(card: Element): string | null {
   const link =
     card.querySelector('a#thumbnail[href*="/watch"]') ||
@@ -104,22 +110,17 @@ function getBadgeTitle(result: ClassificationResult): string {
   return lines.join('\n');
 }
 
-function injectBadge(card: HTMLElement, result: ClassificationResult): void {
-  if (card.querySelector('.slopguard-badge')) return;
-
-  const target = getBadgeTarget(card);
-  if (!target) return;
-
+function createBadge(className: string, text: string, title: string, top: string, background: string): HTMLDivElement {
   const badge = document.createElement('div');
-  badge.className = 'slopguard-badge';
-  badge.textContent = result.label === 'high' ? '🔴 Slop risk' : '🟡 Check content';
-  badge.title = getBadgeTitle(result);
+  badge.className = className;
+  badge.textContent = text;
+  badge.title = title;
 
   Object.assign(badge.style, {
     position: 'absolute',
-    top: '6px',
+    top,
     left: '6px',
-    background: 'rgba(0, 0, 0, 0.86)',
+    background,
     color: 'white',
     padding: '3px 7px',
     fontSize: '11px',
@@ -129,10 +130,49 @@ function injectBadge(card: HTMLElement, result: ClassificationResult): void {
     pointerEvents: 'none'
   });
 
+  return badge;
+}
+
+function ensureBadgeTargetPosition(target: HTMLElement): void {
   if (getComputedStyle(target).position === 'static') {
     target.style.position = 'relative';
   }
+}
 
+function injectSponsoredBadge(card: HTMLElement): void {
+  if (card.querySelector('.slopguard-sponsored-badge')) return;
+
+  const target = getBadgeTarget(card);
+  if (!target) return;
+
+  const badge = createBadge(
+    'slopguard-sponsored-badge',
+    '🔵 Sponsored',
+    'SlopGuard: this card appears to be sponsored/advertising content.',
+    '6px',
+    'rgba(20, 70, 150, 0.9)'
+  );
+
+  ensureBadgeTargetPosition(target);
+  target.appendChild(badge);
+}
+
+function injectBadge(card: HTMLElement, result: ClassificationResult): void {
+  if (card.querySelector('.slopguard-badge')) return;
+
+  const target = getBadgeTarget(card);
+  if (!target) return;
+
+  const top = card.querySelector('.slopguard-sponsored-badge') ? '32px' : '6px';
+  const badge = createBadge(
+    'slopguard-badge',
+    result.label === 'high' ? '🔴 Slop risk' : '🟡 Check content',
+    getBadgeTitle(result),
+    top,
+    'rgba(0, 0, 0, 0.86)'
+  );
+
+  ensureBadgeTargetPosition(target);
   target.appendChild(badge);
 }
 
@@ -177,6 +217,11 @@ function scan(): void {
     const title = getTitle(card);
     if (!title) return;
 
+    const sponsored = isSponsoredCard(card);
+    if (sponsored) {
+      injectSponsoredBadge(htmlCard);
+    }
+
     const videoId = getVideoId(card);
     if (!videoId) return;
 
@@ -185,7 +230,8 @@ function scan(): void {
       title,
       channel: getChannel(card),
       snippet: getSnippet(card),
-      pageUrl: location.href
+      pageUrl: location.href,
+      isSponsored: sponsored
     };
 
     htmlCard.dataset.slopguardProcessed = 'true';
