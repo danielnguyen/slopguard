@@ -8,11 +8,12 @@ const DEFAULT_WARN_THRESHOLD = 20;
 const DEFAULT_HIGH_THRESHOLD = 40;
 const DEFAULT_OPENAI_GATE_THRESHOLD = 20;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const CACHE_VERSION = 6;
+const CACHE_VERSION = 7;
 const OPENAI_CALL_WINDOW_MS = 60 * 1000;
 const MAX_OPENAI_CALLS_PER_WINDOW = 10;
 
 type Provider = 'heuristic' | 'openai';
+type ContentCategory = 'political_current_affairs' | 'creator_drama' | 'entertainment' | 'ad_placement' | 'unknown';
 
 type SlopGuardSettings = {
   enabled: boolean;
@@ -38,6 +39,7 @@ type ClassificationResult = {
   score: number;
   label: 'low' | 'medium' | 'high';
   source: 'heuristic' | 'openai' | 'cache';
+  category: ContentCategory;
   explanation?: string;
   labels?: string[];
   analyzedAt: number;
@@ -145,22 +147,61 @@ function canCallOpenAI(): boolean {
   return true;
 }
 
-function heuristicScore(title: string): number {
+function combinedText(metadata: VideoMetadata): string {
+  return `${metadata.title} ${metadata.channel || ''} ${metadata.snippet || ''}`.toLowerCase();
+}
+
+function categorize(metadata: VideoMetadata): ContentCategory {
+  if (metadata.isSponsored) return 'ad_placement';
+
+  const text = combinedText(metadata);
+
+  const currentAffairsSignals = [
+    'canada', 'canadian', 'carney', 'trump', 'biden', 'poilievre', 'alberta', 'ottawa', 'government',
+    'election', 'minister', 'parliament', 'tariff', 'nato', 'military', 'defence', 'defense', 'fighter',
+    'gripen', 'f-35', 'war', 'russia', 'ukraine', 'china', 'india', 'immigration', 'economy', 'trade',
+    'hantavirus', 'outbreak', 'public health', 'pressroom', 'news', 'cbc', 'ctv', 'global news', 'reuters',
+    'ap news', 'associated press'
+  ];
+
+  if (currentAffairsSignals.some((signal) => text.includes(signal))) {
+    return 'political_current_affairs';
+  }
+
+  const creatorDramaSignals = [
+    'downfall', 'controversy', 'drama', 'exposed', 'scammer', 'scumbag', 'influencer', 'creator',
+    'reaction', 'responds', 'called out', 'boss stole', 'cheating', 'financial audit'
+  ];
+
+  if (creatorDramaSignals.some((signal) => text.includes(signal))) {
+    return 'creator_drama';
+  }
+
+  const entertainmentSignals = ['movie', 'music', 'song', 'gaming', 'roblox', 'hockey', 'podcast', 'comedy', 'shorts'];
+  if (entertainmentSignals.some((signal) => text.includes(signal))) {
+    return 'entertainment';
+  }
+
+  return 'unknown';
+}
+
+function heuristicRiskScore(metadata: VideoMetadata, category: ContentCategory): number {
+  if (category !== 'political_current_affairs') return 0;
+
   let score = 0;
-  const lower = title.toLowerCase();
+  const lower = combinedText(metadata);
 
   if (lower.includes('exposed') || lower.includes('shocking')) score += 20;
-  if (lower.includes('breaking') || lower.includes('1min ago') || lower.includes('1 min ago')) score += 15;
-  if (lower.includes('war') || lower.includes('military')) score += 10;
+  if (lower.includes('breaking') || lower.includes('1min ago') || lower.includes('1 min ago') || lower.includes('3min ago') || lower.includes('3 min ago')) score += 20;
+  if (lower.includes('war') || lower.includes('military') || lower.includes('defence') || lower.includes('defense')) score += 10;
   if (lower.includes('invading') || lower.includes('invasion')) score += 10;
-  if (lower.includes('ukraine') || lower.includes('russia')) score += 10;
+  if (lower.includes('ukraine') || lower.includes('russia') || lower.includes('china')) score += 10;
   if (lower.includes('jtf2') || lower.includes('special forces') || lower.includes('green beret')) score += 20;
-  if (lower.includes('trump')) score += 10;
+  if (lower.includes('trump') || lower.includes('carney') || lower.includes('poilievre')) score += 10;
   if (lower.includes('collapse') || lower.includes('betrayed') || lower.includes('karma') || lower.includes('panic')) score += 15;
-  if (lower.includes('downfall') || lower.includes('controversy') || lower.includes('drama') || lower.includes('cancelled') || lower.includes('canceled')) score += 20;
-  if (lower.includes('secret') || lower.includes('lies') || lower.includes('liars') || lower.includes('traitors')) score += 15;
+  if (lower.includes('secret') || lower.includes('secret tests') || lower.includes('unstoppable') || lower.includes('massive') || lower.includes('changes everything')) score += 20;
   if (lower.includes('world') && lower.includes('best')) score += 15;
-  if (/[!]{3,}/.test(title)) score += 10;
+  if (/[!]{3,}/.test(metadata.title)) score += 10;
 
   return Math.min(score, 100);
 }
@@ -211,13 +252,21 @@ async function clearCache(): Promise<{ removed: number }> {
 }
 
 function heuristicClassification(metadata: VideoMetadata, settings: SlopGuardSettings): ClassificationResult {
-  const score = heuristicScore(metadata.title);
+  const category = categorize(metadata);
+  const score = heuristicRiskScore(metadata, category);
+
   return {
     score,
     label: labelForScore(score, settings),
     source: 'heuristic',
-    explanation: score > 0 ? 'Matched lightweight slop-risk signals.' : 'No lightweight slop-risk signals matched.',
-    labels: metadata.isSponsored ? ['sponsored'] : [],
+    category,
+    explanation:
+      category === 'political_current_affairs'
+        ? score > 0
+          ? 'Matched current-affairs source-transparency signals.'
+          : 'No current-affairs source-transparency signals matched.'
+        : `Categorized as ${category}; source-risk scoring skipped.`,
+    labels: metadata.isSponsored ? ['sponsored_placement'] : [],
     analyzedAt: Date.now()
   };
 }
@@ -234,7 +283,7 @@ function parseOpenAIJson(text: string): Partial<ClassificationResult> {
   return JSON.parse(trimmed.slice(jsonStart, jsonEnd + 1));
 }
 
-async function openAIClassification(metadata: VideoMetadata, settings: SlopGuardSettings): Promise<ClassificationResult> {
+async function openAIClassification(metadata: VideoMetadata, settings: SlopGuardSettings, category: ContentCategory): Promise<ClassificationResult> {
   if (!settings.openaiApiKey) {
     return heuristicClassification(metadata, settings);
   }
@@ -262,13 +311,14 @@ async function openAIClassification(metadata: VideoMetadata, settings: SlopGuard
         {
           role: 'system',
           content:
-            'You classify YouTube video metadata for low-transparency, engagement-driven slop patterns. Return JSON only. Do not judge political alignment. Important distinction: clickbait packaging is not automatically slop. Drama, controversy, downfall, reaction, and exposure content should receive content-type labels, but not automatically high scores. Original creator content, interviews, documentaries, podcasts, and reporting from named news outlets can have sensational titles but should receive lower scores unless the metadata implies fabricated claims, weak sourcing, faceless narrative farming, synthetic news style, or speculative political/geopolitical manipulation. Penalize high-confidence claims with low visible accountability. Reward clear channel identity, named institutions, visible report snippets, interviews, or transparent creator context. Content-type labels alone should not raise the slop score unless paired with weak sourcing, synthetic-news style, or manipulative framing.'
+            'You classify YouTube metadata for current-affairs source-transparency risk. Return JSON only. Do not judge political alignment or whether the viewpoint is correct. Only score political/current-affairs/geopolitical/public-health/economic content. Creator drama, entertainment, personal commentary, comedy, gaming, music, and general influencer content should usually score 0 unless it makes current-affairs claims. Penalize low-transparency current-affairs patterns: synthetic-news style, faceless narrative farming, fabricated-sounding claims, vague attribution, AI-politician thumbnails implied by metadata, urgent geopolitical claims, or sensational policy/war/election framing without clear sourcing. Reward named news outlets, clear original reporting, primary sources, and transparent creator context.'
         },
         {
           role: 'user',
           content: JSON.stringify({
+            category,
             metadata,
-            task: 'Return JSON with slop_score 0-100, labels string array, and explanation <= 20 words. Include labels like sponsored, clickbait_only, creator_controversy, drama_recap, reaction_commentary, uncredentialed_commentary, original_creator_context, named_news_outlet, music_reaction, entertainment_clip, sensationalism, speculative_narrative, weak_sourcing, synthetic_news_style, faceless_content_farm when applicable.'
+            task: 'Return JSON with slop_score 0-100, category, labels string array, and explanation <= 20 words. Use diplomatic labels like source_transparency_risk, sensational_framing, vague_attribution, synthetic_news_style, named_news_outlet, original_reporting, commentary_context, sponsored_placement.'
           })
         }
       ],
@@ -286,18 +336,19 @@ async function openAIClassification(metadata: VideoMetadata, settings: SlopGuard
 
   const data = await response.json();
   const outputText = data.output_text || data.output?.flatMap((item: any) => item.content || [])?.map((item: any) => item.text || '').join('') || '';
-  const parsed = parseOpenAIJson(outputText);
-  const score = Math.max(0, Math.min(100, Number((parsed as any).slop_score ?? parsed.score ?? 0)));
+  const parsed = parseOpenAIJson(outputText) as any;
+  const score = Math.max(0, Math.min(100, Number(parsed.slop_score ?? parsed.score ?? 0)));
   const labels = Array.isArray(parsed.labels) ? parsed.labels.map(String) : [];
 
-  if (metadata.isSponsored && !labels.includes('sponsored')) {
-    labels.push('sponsored');
+  if (metadata.isSponsored && !labels.includes('sponsored_placement')) {
+    labels.push('sponsored_placement');
   }
 
   return {
     score,
     label: labelForScore(score, settings),
     source: 'openai',
+    category: parsed.category || category,
     explanation: typeof parsed.explanation === 'string' ? parsed.explanation : 'OpenAI classification completed.',
     labels,
     analyzedAt: Date.now()
@@ -313,6 +364,7 @@ async function classifyVideo(metadata: VideoMetadata): Promise<ClassificationRes
       score: 0,
       label: 'low',
       source: 'heuristic',
+      category: 'unknown',
       explanation: 'SlopGuard is disabled.',
       labels: [],
       analyzedAt: Date.now()
@@ -333,9 +385,14 @@ async function classifyVideo(metadata: VideoMetadata): Promise<ClassificationRes
   stats.heuristicResults += 1;
 
   let result = heuristic;
-  if (settings.provider === 'openai' && heuristic.score >= settings.openaiGateThreshold && settings.openaiApiKey) {
+  if (
+    settings.provider === 'openai' &&
+    heuristic.category === 'political_current_affairs' &&
+    heuristic.score >= settings.openaiGateThreshold &&
+    settings.openaiApiKey
+  ) {
     try {
-      result = await openAIClassification(metadata, settings);
+      result = await openAIClassification(metadata, settings, heuristic.category);
     } catch (error) {
       stats.openaiFailures += 1;
       console.warn('SlopGuard OpenAI classification failed; falling back to heuristic.', error);
