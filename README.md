@@ -13,12 +13,62 @@ This is a personal, independent project. It is not affiliated with or endorsed b
 - Scans YouTube pages (home, search, sidebar)
 - Applies lightweight heuristic scoring and optional model-assisted classification
 - Displays context badges for videos with notable presentation or transparency signals:
-  - 🔴 Low-transparency risk
-  - 🟡 Check sourcing
-  - 🟠 High-engagement framing
+  - 🔴 Check sourcing
+  - 🟡 Context needed
+  - 🟡 Quick check
+  - ⚪ Checking…
   - 🔵 Sponsored placement
 
 The goal is not to decide truth, but to introduce friction before consuming potentially manipulative content.
+
+---
+
+## Classifier scope
+
+ContextChecker does **not** determine whether a video is true, false, good, bad, biased, ethical, unethical, or worth watching.
+
+It highlights videos whose public metadata suggests that extra source/context checking may be useful, especially for:
+
+- current affairs
+- politics and elections
+- public health
+- geopolitical or military claims
+- economic or trade claims
+- urgent, dramatic, or speculative source-sensitive framing
+- visible sponsored placements
+
+ContextChecker should be treated as a **source-transparency aid**, not a truth adjudicator, creator-rating system, or content quality score.
+
+---
+
+## Label meanings
+
+Labels are intentionally cautious and diplomatic:
+
+- **🔴 Check sourcing** — the metadata has stronger source-transparency or presentation-risk signals. This is a prompt to verify the claim, not a conclusion that the video is false.
+- **🟡 Context needed** — the metadata suggests additional context may be useful before relying on the video.
+- **🟡 Quick check** — a local lightweight check matched source-sensitive patterns, or an AI review could not complete. This is lower-confidence than a completed model-assisted review.
+- **⚪ Checking…** — a model-assisted review has been queued and may update shortly.
+- **🔵 Sponsored placement** — YouTube appears to mark the item as sponsored or promoted. This is an advertising-disclosure indicator, not a quality judgment.
+
+Labels should never be interpreted as allegations of deception, misconduct, illegality, bad faith, misinformation, disinformation, or platform manipulation.
+
+---
+
+## Stabilization guardrails
+
+ContextChecker should avoid becoming a personal taste filter or an endlessly expanding keyword dictionary.
+
+Future scoring changes should be made cautiously and should generally meet at least one of these criteria:
+
+- repeated obvious misses across several examples
+- repeated harmful false positives against legitimate news, comedy, satire, or original reporting
+- clear UX bug
+- cost, rate-limit, or privacy issue
+- legal/disclaimer wording issue
+- generalizable source-transparency pattern, not a one-off dislike of a specific creator, channel, topic, or viewpoint
+
+When in doubt, prefer routing borderline current-affairs content to review rather than hard-coding a final judgment.
 
 ---
 
