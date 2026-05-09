@@ -32,14 +32,14 @@ jobs:
       - name: Build extension bundles
         run: npm run build
 
-      - name: Package extension ZIPs
+      - name: Package extension artifacts
         run: npm run package
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/chrome/*.zip
-            artifacts/firefox/*.zip
+            artifacts/chrome/context-checker-chromium.zip
+            artifacts/firefox/context-checker-firefox-unsigned.xpi
           generate_release_notes: true
           prerelease: true
