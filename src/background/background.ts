@@ -9,7 +9,7 @@ const DEFAULT_WARN_THRESHOLD = 20;
 const DEFAULT_HIGH_THRESHOLD = 40;
 const DEFAULT_OPENAI_GATE_THRESHOLD = 20;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const CACHE_VERSION = 12;
+const CACHE_VERSION = 13;
 const OPENAI_CALL_WINDOW_MS = 60 * 1000;
 const MAX_OPENAI_CALLS_PER_WINDOW = 20;
 const OPENAI_INITIAL_BURST = 5;
@@ -182,6 +182,27 @@ const ATTENTION_FRAMING_SIGNALS: EligibilitySignal[] = [
   }
 ];
 
+const GEOPOLITICAL_OUTCOME_SIGNALS: EligibilitySignal[] = [
+  {
+    id: 'speculative_geopolitical_outcome',
+    weight: 15,
+    terms: [
+      'win the war',
+      'win the entire war',
+      'chance to win',
+      'end the war',
+      'turn the tide',
+      'turning point',
+      'game changer',
+      'decisive blow',
+      'war is over',
+      'could defeat',
+      'changed everything',
+      'no one expected'
+    ]
+  }
+];
+
 const CREATOR_DRAMA_TERMS = [
   'downfall', 'controversy', 'drama', 'scammer', 'scumbag', 'influencer', 'creator',
   'reaction', 'responds', 'called out', 'boss stole', 'cheating', 'financial audit'
@@ -299,14 +320,17 @@ function getEligibility(metadata: VideoMetadata): EligibilityResult {
   const text = combinedText(metadata);
   const currentAffairs = scoreSignals(text, CURRENT_AFFAIRS_SIGNALS);
   const attentionFraming = scoreSignals(text, ATTENTION_FRAMING_SIGNALS);
+  const geopoliticalOutcome = currentAffairs.labels.includes('geopolitics_and_security')
+    ? scoreSignals(text, GEOPOLITICAL_OUTCOME_SIGNALS)
+    : { score: 0, labels: [] };
 
   if (currentAffairs.score > 0) {
     return {
       category: 'political_current_affairs',
-      score: Math.min(100, currentAffairs.score + attentionFraming.score),
-      labels: [...currentAffairs.labels, ...attentionFraming.labels],
+      score: Math.min(100, currentAffairs.score + attentionFraming.score + geopoliticalOutcome.score),
+      labels: [...currentAffairs.labels, ...attentionFraming.labels, ...geopoliticalOutcome.labels],
       currentAffairsScore: currentAffairs.score,
-      attentionFramingScore: attentionFraming.score
+      attentionFramingScore: attentionFraming.score + geopoliticalOutcome.score
     };
   }
 
