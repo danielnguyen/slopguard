@@ -31,6 +31,7 @@ type VideoMetadata = {
   channel?: string;
   snippet?: string;
   pageUrl: string;
+  thumbnailUrl?: string;
   isSponsored?: boolean;
 };
 
@@ -46,6 +47,14 @@ function cleanText(value?: string): string | undefined {
   if (!value) return undefined;
   const cleaned = value.replace(/\s+/g, ' ').trim();
   return cleaned || undefined;
+}
+
+function getThumbnailUrl(card: Element): string | undefined {
+  const img = card.querySelector('img.yt-core-image, img');
+  const src = (img as HTMLImageElement | null)?.currentSrc || (img as HTMLImageElement | null)?.src;
+
+  if (!src || src.startsWith('data:')) return undefined;
+  return src;
 }
 
 function isNearViewport(element: Element): boolean {
@@ -248,7 +257,19 @@ function sourceRank(source?: ClassificationResult['source']): number {
   }
 }
 
+function hasThumbnailContextSignal(result: ClassificationResult): boolean {
+  return Boolean(
+    result.labels?.some((label) =>
+      label === 'thumbnail_authenticity_unclear' ||
+      label === 'dramatized_or_recreated_visual' ||
+      label === 'synthetic_visual_style' ||
+      label === 'visual_claim_exceeds_metadata'
+    )
+  );
+}
+
 function getPublicBadgeText(result: ClassificationResult): string {
+  if (hasThumbnailContextSignal(result)) return '🟡 Thumbnail context';
   if (result.source === 'queued') return '⚪ Checking…';
 
   if (result.source === 'heuristic' || result.source === 'local_throttled' || result.source === 'local_error_fallback') {
@@ -287,6 +308,8 @@ function updateBadgeElement(badge: HTMLDivElement, result: ClassificationResult)
 
   if (result.source === 'queued') {
     badge.style.background = 'rgba(90, 90, 90, 0.9)';
+  } else if (hasThumbnailContextSignal(result)) {
+    badge.style.background = 'rgba(130, 90, 0, 0.92)';
   } else if ((result.source === 'openai' || result.source === 'cache') && result.label === 'high') {
     badge.style.background = 'rgba(120, 0, 0, 0.9)';
   } else {
@@ -440,6 +463,7 @@ function scan(): void {
       channel: getChannel(card),
       snippet: getSnippet(card),
       pageUrl: location.href,
+      thumbnailUrl: getThumbnailUrl(card),
       isSponsored: sponsored
     };
 
