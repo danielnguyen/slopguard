@@ -34,19 +34,19 @@ jobs:
       - name: Build extension bundles
         run: npm run build
 
-      - name: Package extension ZIPs
+      - name: Package extension artifacts
         run: npm run package
 
-      - name: Upload Chrome artifact
+      - name: Upload Chromium artifact
         uses: actions/upload-artifact@v4
         with:
-          name: context-checker-chrome
-          path: artifacts/chrome/*.zip
+          name: context-checker-chromium
+          path: artifacts/chrome/context-checker-chromium.zip
           if-no-files-found: error
 
-      - name: Upload Firefox artifact
+      - name: Upload Firefox unsigned XPI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: context-checker-firefox-unsigned
-          path: artifacts/firefox/*.zip
+          name: context-checker-firefox-unsigned-xpi
+          path: artifacts/firefox/context-checker-firefox-unsigned.xpi
           if-no-files-found: error
